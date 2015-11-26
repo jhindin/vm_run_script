@@ -1,0 +1,5 @@
+#!/bin/bash
+
+ifconfig $1 promisc 0.0.0.0 &&
+brctl addif ${INTERNAL_BRIDGE} $1
+
