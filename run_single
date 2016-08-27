@@ -1,0 +1,91 @@
+#!/bin/bash
+
+usage()
+{
+    echo "Usage: run [-i|--id <unique id>] <img>"
+    echo -e "\t -i|--id <unique id> set unique id, allows running setups concurrently, zero by default"
+}
+
+export UNIQUE_ID=0
+export WORLD_BRIDGE=br0
+
+
+simplified_options=`getopt -o i:d: -l id:,imgdir:  -- "$@"`
+if [ $? != 0 ]
+then
+    usage
+    exit 1
+fi
+
+eval set -- ${simplified_options}
+
+while true ; do
+    case "$1" in
+        -i|--id)
+	    if [[ $2 =~ ^-?[0-9]+$ ]]
+	    then
+		export UNIQUE_ID=$2
+	    else
+		echo "Invalid integer " $2
+		usage
+		exit -1
+	    fi
+	    shift
+	    shift
+            ;;
+        --)
+	    shift
+            break;
+    esac
+done
+
+
+if [ $# != 1 ]
+then
+    usage
+    exit 1
+fi
+
+IMG=$1
+
+
+export INTERNAL_BRIDGE=nk_br${UNIQUE_ID}
+brctl addbr ${INTERNAL_BRIDGE}
+INTERNAL_RANGE=`expr 100 + ${UNIQUE_ID}`
+
+trap remove_bridge INT
+
+function remove_bridge() {
+    ifconfig ${INTERNAL_BRIDGE} down
+    brctl delbr ${INTERNAL_BRIDGE}
+}
+
+ifconfig ${INTERNAL_BRIDGE} up 192.168.${INTERNAL_RANGE}.1
+
+PORT_BASE=`expr ${UNIQUE_ID} '*' 3`
+LB_PORT=`expr ${PORT_BASE} + 0`
+NK_BROWSER_PORT=`expr ${PORT_BASE} + 1`
+FORWARD_PORT=`expr ${PORT_BASE} + 2`
+
+
+internal_device() {
+    echo -netdev tap,id=hostnet1,script=`dirname $0`/internal_bridge_ifup,downscript=no,ifname=int_nic_${UNIQUE_ID}_$1 \
+                 -device virtio-net-pci,netdev=hostnet1,mac=56:cc:cc:0$1:cc:cc,bus=pci.0,id=int_nic_${UNIQUE_ID}_$1
+}
+
+world_device() {
+    echo -netdev tap,id=hostnet2,script=`dirname $0`/world_bridge_ifup,downscript=no,ifname=world_nic_${UNIQUE_ID}_$1 \
+                 -device virtio-net-pci,netdev=hostnet2,mac=56:cc:cc:0$1:cc:cd,bus=pci.0,id=world_nic_${UNIQUE_ID}_$1
+}
+
+
+qemu-system-x86_64 -m 1024 -hda ${IMG}   -cpu host -enable-kvm   -show-cursor -name LB-${UNIQUE_ID}  -vnc :${LB_PORT} \
+    `internal_device 1` `world_device 1` &
+
+
+
+echo Waiting for VMs termination
+wait
+
+ifconfig ${INTERNAL_BRIDGE} down
+brctl delbr ${INTERNAL_BRIDGE}
